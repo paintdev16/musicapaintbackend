@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: musicapaintbackend
+    runtime: python
+    buildCommand: bash build.sh
+    startCommand: bash start.sh
+    healthCheckPath: /health

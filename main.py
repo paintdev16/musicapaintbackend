@@ -5,6 +5,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -364,13 +365,33 @@ def health():
     deno_path = shutil.which("deno") or str(Path.home() / ".deno" / "bin" / deno_name)
     if not Path(deno_path).is_file():
         deno_path = None
-    runtime = "deno" if deno_path else ("node" if shutil.which("node") else None)
+    node_path = shutil.which("node")
+    runtime = None
+    runtime_version = None
+    runtime_path = deno_path or node_path
+    if deno_path:
+        runtime = "deno"
+    elif node_path:
+        runtime = "node"
+    if runtime_path:
+        try:
+            version = subprocess.run(
+                [runtime_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            runtime_version = (version.stdout or version.stderr).strip().splitlines()[0][:40]
+        except (OSError, subprocess.SubprocessError, IndexError):
+            runtime_version = "unavailable"
     return {
         "status": "ok",
         "audio": {
             "yt_dlp": yt_dlp.version.__version__,
             "ejs_installed": find_spec("yt_dlp_ejs") is not None,
             "js_runtime": runtime,
+            "js_runtime_version": runtime_version,
         },
     }
 
