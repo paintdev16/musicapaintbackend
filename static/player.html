@@ -1164,7 +1164,7 @@
       </nav>
 
       <div class="playlists-scroll" id="sidebarPlaylists">
-        <!-- Playlists dinámicas desde SQLite -->
+        <!-- Playlists locales del navegador -->
       </div>
     </aside>
 
@@ -1273,7 +1273,7 @@
           <div class="shelf-header" style="margin-bottom: 24px;">
             <div>
               <h2 class="shelf-title">Tu Biblioteca</h2>
-              <p class="shelf-subtitle">Playlists, canciones favoritas e historial en SQLite</p>
+              <p class="shelf-subtitle">Playlists, favoritos e historial guardados en este navegador</p>
             </div>
             <button class="btn-pill primary" onclick="openCreatePlaylistModal()">+ Nueva Playlist</button>
           </div>
@@ -1510,6 +1510,32 @@
     let userPlaylists = [];
     let favoritesSet = new Set();
     let currentSong = null;
+    const LOCAL_DATA_KEYS = {
+      playlists: "music.local.playlists.v1",
+      favorites: "music.local.favorites.v1",
+      history: "music.local.history.v1",
+    };
+
+    function readLocalList(key) {
+      try {
+        const value = JSON.parse(localStorage.getItem(LOCAL_DATA_KEYS[key]) || "[]");
+        return Array.isArray(value) ? value : [];
+      } catch (err) {
+        console.warn(`No se pudo leer ${key} local:`, err);
+        return [];
+      }
+    }
+
+    function writeLocalList(key, value) {
+      try {
+        localStorage.setItem(LOCAL_DATA_KEYS[key], JSON.stringify(value));
+        return true;
+      } catch (err) {
+        console.error(`No se pudo guardar ${key} local:`, err);
+        showToast("No se pudo guardar en este navegador");
+        return false;
+      }
+    }
     let queue = [];
     let queueIndex = -1;
     let isShuffle = false;
@@ -1591,40 +1617,15 @@
     // CARGAR Y GESTIONAR VISTA: INICIO
     // ==========================================
     async function loadHome() {
-      try {
-        const res = await fetch("/api/home");
-        if (!res.ok) return;
-        const data = await res.json();
-
-        // 1. Historial reciente
-        if (data.recent && data.recent.length > 0) {
-          $("shelfRecentWrap").style.display = "block";
-          renderCardsGrid($("shelfRecent"), data.recent.slice(0, 8), true);
-        } else {
-          $("shelfRecentWrap").style.display = "none";
-        }
-
-        // 2. Recomendaciones "Para ti"
-        if (data.recommendations && data.recommendations.songs && data.recommendations.songs.length > 0) {
-          $("shelfRecsTitle").textContent = data.recommendations.title || "Para ti";
-          renderCardsGrid($("shelfRecs"), data.recommendations.songs, true);
-        } else {
-          $("shelfRecs").innerHTML = `<div style="color:var(--text-muted);font-size:14px;">Reproduce canciones para recibir recomendaciones personalizadas.</div>`;
-        }
-
-        // 3. Estaciones de Radio Rápida
-        renderHomeRadios(data.genres || []);
-
-        // 4. Favoritos destacados
-        if (data.favorites && data.favorites.length > 0) {
-          $("shelfFavsWrap").style.display = "block";
-          renderCardsGrid($("shelfFavorites"), data.favorites.slice(0, 8), true);
-        } else {
-          $("shelfFavsWrap").style.display = "none";
-        }
-      } catch (err) {
-        console.error("Error cargando home:", err);
-      }
+      const recent = readLocalList("history");
+      const favorites = readLocalList("favorites");
+      $("shelfRecentWrap").style.display = recent.length ? "block" : "none";
+      if (recent.length) renderCardsGrid($("shelfRecent"), recent.slice(0, 8), true);
+      $("shelfFavsWrap").style.display = favorites.length ? "block" : "none";
+      if (favorites.length) renderCardsGrid($("shelfFavorites"), favorites.slice(0, 8), true);
+      $("shelfRecsTitle").textContent = "Para ti";
+      $("shelfRecs").innerHTML = `<div style="color:var(--text-muted);font-size:14px;">Busca música para empezar a escuchar.</div>`;
+      renderHomeRadios([]);
     }
 
     function renderHomeRadios(genres) {
@@ -1678,14 +1679,15 @@
     // CARGAR Y GESTIONAR VISTA: EXPLORAR
     // ==========================================
     async function loadExplore() {
-      try {
-        const res = await fetch("/api/genres");
-        if (!res.ok) return;
-        const data = await res.json();
-        renderExploreGenres(data.genres || []);
-      } catch (err) {
-        console.error("Error cargando géneros:", err);
-      }
+      renderExploreGenres([
+        { name: "Cumbia", icon: "💃", gradient: "linear-gradient(135deg,#be123c,#f97316)", query: "cumbia peruana exitos" },
+        { name: "Reggaetón", icon: "🔥", gradient: "linear-gradient(135deg,#7e22ce,#db2777)", query: "reggaeton latino" },
+        { name: "Salsa", icon: "🎺", gradient: "linear-gradient(135deg,#b91c1c,#f59e0b)", query: "salsa clasica" },
+        { name: "Bachata", icon: "🎸", gradient: "linear-gradient(135deg,#7c2d12,#ea580c)", query: "bachata romantica" },
+        { name: "Baladas", icon: "💜", gradient: "linear-gradient(135deg,#4338ca,#a855f7)", query: "baladas romanticas" },
+        { name: "Rock", icon: "🎸", gradient: "linear-gradient(135deg,#18181b,#52525b)", query: "rock en español" },
+        { name: "Pop", icon: "✨", gradient: "linear-gradient(135deg,#be185d,#8b5cf6)", query: "pop latino exitos" },
+      ]);
     }
 
     function renderExploreGenres(genres) {
@@ -1752,10 +1754,11 @@
 
     async function loadUserPlaylists() {
       try {
-        const res = await fetch("/api/playlists");
-        if (!res.ok) return;
-        const data = await res.json();
-        userPlaylists = data.playlists || [];
+        userPlaylists = readLocalList("playlists").map(pl => ({
+          ...pl,
+          songs: Array.isArray(pl.songs) ? pl.songs : [],
+          songs_count: Array.isArray(pl.songs) ? pl.songs.length : 0,
+        }));
 
         // Renderizar barra lateral
         const sidebarList = $("sidebarPlaylists");
@@ -1818,9 +1821,8 @@
 
     async function openPlaylistDetail(playlistId) {
       try {
-        const res = await fetch(`/api/playlists/${playlistId}`);
-        if (!res.ok) throw new Error("No se pudo cargar la playlist");
-        currentPlaylistObj = await res.json();
+        currentPlaylistObj = userPlaylists.find(pl => String(pl.id) === String(playlistId));
+        if (!currentPlaylistObj) throw new Error("No se encontró la playlist");
 
         navigateTo("playlist");
         $("plHeroTitle").textContent = currentPlaylistObj.name;
@@ -1866,12 +1868,12 @@
       if (!currentPlaylistObj) return;
       if (!confirm(`¿Seguro que deseas eliminar la playlist "${currentPlaylistObj.name}"?`)) return;
       try {
-        const res = await fetch(`/api/playlists/${currentPlaylistObj.id}`, { method: "DELETE" });
-        if (res.ok) {
-          showToast("Playlist eliminada");
-          loadUserPlaylists();
-          navigateTo("library");
-        }
+        const playlists = readLocalList("playlists").filter(pl => String(pl.id) !== String(currentPlaylistObj.id));
+        writeLocalList("playlists", playlists);
+        currentPlaylistObj = null;
+        showToast("Playlist eliminada");
+        loadUserPlaylists();
+        navigateTo("library");
       } catch (e) {
         showToast("Error eliminando playlist");
       }
@@ -1880,10 +1882,7 @@
     // Favoritos
     async function loadUserFavorites() {
       try {
-        const res = await fetch("/api/favorites");
-        if (!res.ok) return;
-        const data = await res.json();
-        const favs = data.favorites || [];
+        const favs = readLocalList("favorites");
 
         favoritesSet = new Set(favs.map(f => f.id));
         updateHeartIcons();
@@ -1897,9 +1896,7 @@
 
     async function playAllFavorites() {
       try {
-        const res = await fetch("/api/favorites");
-        const data = await res.json();
-        const favs = data.favorites || [];
+        const favs = readLocalList("favorites");
         if (favs.length === 0) {
           showToast("No tienes canciones favoritas guardadas");
           return;
@@ -1914,10 +1911,7 @@
     // Historial
     async function loadUserHistory() {
       try {
-        const res = await fetch("/api/history");
-        if (!res.ok) return;
-        const data = await res.json();
-        const hist = data.history || [];
+        const hist = readLocalList("history");
 
         $("histCountLabel").textContent = `${hist.length} canciones reproducidas recientemente`;
         renderSongTable($("historyTableBody"), hist);
@@ -1929,11 +1923,9 @@
     async function clearUserHistory() {
       if (!confirm("¿Deseas vaciar todo el historial de reproducción?")) return;
       try {
-        const res = await fetch("/api/history", { method: "DELETE" });
-        if (res.ok) {
-          showToast("Historial borrado");
-          loadUserHistory();
-        }
+        writeLocalList("history", []);
+        showToast("Historial borrado");
+        loadUserHistory();
       } catch (e) {
         showToast("Error borrando historial");
       }
@@ -2221,11 +2213,14 @@
     async function removeSongFromPl(evt, playlistId, songId) {
       evt.stopPropagation();
       try {
-        const res = await fetch(`/api/playlists/${playlistId}/songs/${songId}`, { method: "DELETE" });
-        if (res.ok) {
-          showToast("Canción quitada de la playlist");
-          openPlaylistDetail(playlistId);
-        }
+        const playlists = readLocalList("playlists");
+        const playlist = playlists.find(pl => String(pl.id) === String(playlistId));
+        if (!playlist) return;
+        playlist.songs = (playlist.songs || []).filter(song => song.id !== songId);
+        writeLocalList("playlists", playlists);
+        await loadUserPlaylists();
+        showToast("Canción quitada de la playlist");
+        openPlaylistDetail(playlistId);
       } catch (e) {
         showToast("Error quitando canción");
       }
@@ -2324,7 +2319,7 @@
         console.warn("Autoplay bloqueado o formato:", err.message);
       }
 
-      // Guardar en historial de SQLite
+      // Guardar historial local en este navegador
       registerHistory(song);
       warmNextAudio();
 
@@ -2351,23 +2346,10 @@
         .finally(() => warmingAudioIds.delete(nextSong.id));
     }
 
-    async function registerHistory(song) {
-      try {
-        await fetch("/api/history", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: song.id,
-            title: song.title,
-            artist: song.artist,
-            genre: song.genre,
-            duration: song.duration,
-            thumbnail: song.thumbnail
-          })
-        });
-      } catch (err) {
-        console.warn("No se pudo registrar historial:", err);
-      }
+    function registerHistory(song) {
+      const history = readLocalList("history").filter(item => item.id !== song.id);
+      history.unshift(song);
+      writeLocalList("history", history.slice(0, 100));
     }
 
     function renderQueue() {
@@ -2629,32 +2611,15 @@
     async function toggleFavorite(song) {
       if (!song || !song.id) return;
       const isFav = favoritesSet.has(song.id);
-
-      try {
-        if (isFav) {
-          await fetch(`/api/favorites/${encodeURIComponent(song.id)}`, { method: "DELETE" });
-          favoritesSet.delete(song.id);
-          showToast("Quitada de favoritos");
-        } else {
-          await fetch("/api/favorites", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id: song.id,
-              title: song.title,
-              artist: song.artist,
-              genre: song.genre,
-              duration: song.duration,
-              thumbnail: song.thumbnail
-            })
-          });
-          favoritesSet.add(song.id);
-          showToast("Añadida a favoritos ❤️");
-        }
-        updateHeartIcons();
-      } catch (err) {
-        showToast("Error actualizando favoritos");
-      }
+      const favorites = readLocalList("favorites");
+      const updated = isFav
+        ? favorites.filter(item => item.id !== song.id)
+        : [song, ...favorites.filter(item => item.id !== song.id)];
+      if (!writeLocalList("favorites", updated)) return;
+      favoritesSet = new Set(updated.map(item => item.id));
+      showToast(isFav ? "Quitada de favoritos" : "Añadida a favoritos ❤️");
+      updateHeartIcons();
+      loadHome();
     }
 
     function toggleFavoriteCurrentSong() {
@@ -2694,20 +2659,19 @@
         return;
       }
 
-      try {
-        const res = await fetch("/api/playlists", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name, description: desc })
-        });
-        if (!res.ok) throw new Error("Error al crear la playlist");
-        const newPl = await res.json();
-        closeModal("modalCreatePlaylist");
-        showToast(`Playlist "${newPl.name}" creada`);
-        loadUserPlaylists();
-      } catch (err) {
-        showToast(err.message);
-      }
+      const playlist = {
+        id: globalThis.crypto?.randomUUID?.() || `pl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name,
+        description: desc,
+        songs: [],
+        created_at: new Date().toISOString(),
+      };
+      const playlists = readLocalList("playlists");
+      playlists.unshift(playlist);
+      if (!writeLocalList("playlists", playlists)) return;
+      closeModal("modalCreatePlaylist");
+      showToast(`Playlist "${playlist.name}" creada`);
+      loadUserPlaylists();
     }
 
     function openAddToPlaylistModal(song) {
@@ -2742,26 +2706,18 @@
 
     async function addPendingSongTo(playlistId, plName) {
       if (!pendingSongForPlaylist) return;
-      try {
-        const res = await fetch(`/api/playlists/${playlistId}/songs`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: pendingSongForPlaylist.id,
-            title: pendingSongForPlaylist.title,
-            artist: pendingSongForPlaylist.artist,
-            genre: pendingSongForPlaylist.genre,
-            duration: pendingSongForPlaylist.duration,
-            thumbnail: pendingSongForPlaylist.thumbnail
-          })
-        });
-        if (!res.ok) throw new Error("No se pudo agregar");
-        closeModal("modalAddToPlaylist");
-        showToast(`Guardada en "${plName}"`);
-        loadUserPlaylists();
-      } catch (err) {
-        showToast(err.message);
+      const playlists = readLocalList("playlists");
+      const playlist = playlists.find(pl => String(pl.id) === String(playlistId));
+      if (!playlist) return showToast("No se encontró la playlist");
+      playlist.songs = Array.isArray(playlist.songs) ? playlist.songs : [];
+      if (!playlist.songs.some(song => song.id === pendingSongForPlaylist.id)) {
+        playlist.songs.push(pendingSongForPlaylist);
       }
+      if (!playlist.cover) playlist.cover = pendingSongForPlaylist.thumbnail;
+      if (!writeLocalList("playlists", playlists)) return;
+      closeModal("modalAddToPlaylist");
+      showToast(`Guardada en "${plName}"`);
+      loadUserPlaylists();
     }
 
     // ==========================================
