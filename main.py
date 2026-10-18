@@ -17,7 +17,11 @@ app = FastAPI(title="Music API")
 
 def configured_cors_origins() -> list[str]:
     configured = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000,http://localhost:5173")
-    return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    origins = [origin.strip() for origin in configured.split(",") if origin.strip()]
+    # Browsers use the opaque "null" origin when this frontend is opened as file://.
+    if "null" not in origins:
+        origins.append("null")
+    return origins
 
 
 app.add_middleware(

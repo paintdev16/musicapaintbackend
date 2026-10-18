@@ -1497,6 +1497,8 @@
 
   <!-- Main JavaScript App Logic -->
   <script>
+    const MUSIC_API_BASE = "https://musicapaintbackend.onrender.com";
+    const musicApiUrl = (path) => new URL(path, MUSIC_API_BASE).toString();
     const $ = (id) => document.getElementById(id);
     const audio = $("audioEl");
 
@@ -1660,7 +1662,7 @@
 
       showToast(`Cargando sintonía: ${mood}...`);
       try {
-        const res = await fetch(`/search?q=${encodeURIComponent(mood + " music mix")}&limit=12`);
+        const res = await fetch(musicApiUrl(`/search?q=${encodeURIComponent(mood + " music mix")}&limit=12`));
         if (!res.ok) return;
         const data = await res.json();
         $("shelfRecsTitle").textContent = `Sintonía: ${mood}`;
@@ -1708,7 +1710,7 @@
       $("genreResultsGrid").innerHTML = `<div style="color:var(--text-muted);font-size:14px;">Buscando música de ${genre.name}...</div>`;
 
       try {
-        const res = await fetch(`/search?q=${encodeURIComponent(genre.query)}&limit=16`);
+        const res = await fetch(musicApiUrl(`/search?q=${encodeURIComponent(genre.query)}&limit=16`));
         if (!res.ok) throw new Error("Error en la búsqueda");
         const data = await res.json();
         const results = data.results || [];
@@ -1993,7 +1995,7 @@
       suggestionsAbortCtrl = controller;
       try {
         const params = new URLSearchParams({ q: query, limit: "7" });
-        const res = await fetch(`/suggest?${params}`, { signal: controller.signal });
+        const res = await fetch(musicApiUrl(`/suggest?${params}`), { signal: controller.signal });
         if (!res.ok) throw new Error("Error cargando sugerencias");
         const data = await res.json();
         if (controller.signal.aborted || query !== $("searchInput").value.trim()) return;
@@ -2078,7 +2080,7 @@
       $("searchResultsGrid").innerHTML = `<div style="color:var(--text-muted);font-size:14px;">Buscando resultados...</div>`;
 
       try {
-        const res = await fetch(`/search?q=${encodeURIComponent(query)}&limit=24`);
+        const res = await fetch(musicApiUrl(`/search?q=${encodeURIComponent(query)}&limit=24`));
         if (!res.ok) throw new Error("Error en la búsqueda");
         const data = await res.json();
         const results = data.results || [];
@@ -2311,7 +2313,7 @@
 
       // Cargar audio
       audio.pause();
-      audio.src = `/${audioMode}/${encodeURIComponent(song.id)}`;
+      audio.src = musicApiUrl(`/${audioMode}/${encodeURIComponent(song.id)}`);
       audio.load();
 
       try {
@@ -2342,7 +2344,7 @@
       const nextSong = queue[nextIndex];
       if (!nextSong || !nextSong.id || warmingAudioIds.has(nextSong.id)) return;
       warmingAudioIds.add(nextSong.id);
-      fetch(`/warmup/${encodeURIComponent(nextSong.id)}`, { method: "POST" })
+      fetch(musicApiUrl(`/warmup/${encodeURIComponent(nextSong.id)}`), { method: "POST" })
         .catch(err => console.warn("No se pudo precargar la siguiente canción:", err.message))
         .finally(() => warmingAudioIds.delete(nextSong.id));
     }
@@ -2415,7 +2417,7 @@
           artist: seedSong.artist || "",
           genre: seedSong.genre || ""
         });
-        const res = await fetch(`/related/${encodeURIComponent(seedSong.id)}?${params}`);
+        const res = await fetch(musicApiUrl(`/related/${encodeURIComponent(seedSong.id)}?${params}`));
         if (!res.ok) throw new Error("Error obteniendo relacionadas");
         const data = await res.json();
         if (requestId !== radioRequestId) return;
@@ -2441,7 +2443,7 @@
 
     function startRadioFromQuery(title, query) {
       showToast(`Iniciando ${title}...`);
-      fetch(`/search?q=${encodeURIComponent(query)}&limit=15`)
+      fetch(musicApiUrl(`/search?q=${encodeURIComponent(query)}&limit=15`))
         .then(r => r.json())
         .then(data => {
           const results = data.results || [];
@@ -2541,7 +2543,7 @@
       showToast(`Modo cambiado a: ${mode === 'direct' ? 'Directo (CDN)' : 'Proxy Python'}`);
       if (currentSong) {
         const time = audio.currentTime;
-        audio.src = `/${audioMode}/${encodeURIComponent(currentSong.id)}`;
+        audio.src = musicApiUrl(`/${audioMode}/${encodeURIComponent(currentSong.id)}`);
         audio.currentTime = time;
         audio.play().catch(() => {});
       }
