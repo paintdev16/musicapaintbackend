@@ -1,7 +1,9 @@
 import asyncio
+import logging
 import os
 import random
 import re
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -14,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 app = FastAPI(title="Music API")
+logger = logging.getLogger(__name__)
 
 def configured_cors_origins() -> list[str]:
     configured = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000,http://localhost:5173")
@@ -70,13 +73,19 @@ def normalize_video_id(value: str) -> str:
 
 
 def ydl_options(**extra):
-    return {
+    options = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
-        **extra,
     }
+    for runtime in ("deno", "node"):
+        runtime_path = shutil.which(runtime)
+        if runtime_path:
+            options["js_runtimes"] = {runtime: {"path": runtime_path}}
+            break
+    options.update(extra)
+    return options
 
 
 def extract_audio(video_id: str) -> dict:
@@ -109,6 +118,7 @@ async def get_audio(video_id: str) -> dict:
         except HTTPException:
             raise
         except Exception as exc:
+            logger.exception("Audio extraction failed for video %s", video_id)
             raise HTTPException(502, "No se pudo extraer el audio del video") from exc
 
         ttl = AUDIO_CACHE_TTL
