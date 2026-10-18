@@ -1,4 +1,5 @@
 import asyncio
+from importlib.util import find_spec
 import logging
 import os
 import random
@@ -359,7 +360,19 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    deno_name = "deno.exe" if os.name == "nt" else "deno"
+    deno_path = shutil.which("deno") or str(Path.home() / ".deno" / "bin" / deno_name)
+    if not Path(deno_path).is_file():
+        deno_path = None
+    runtime = "deno" if deno_path else ("node" if shutil.which("node") else None)
+    return {
+        "status": "ok",
+        "audio": {
+            "yt_dlp": yt_dlp.version.__version__,
+            "ejs_installed": find_spec("yt_dlp_ejs") is not None,
+            "js_runtime": runtime,
+        },
+    }
 
 
 @app.get("/player", include_in_schema=False)
