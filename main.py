@@ -74,30 +74,55 @@ def normalize_video_id(value: str) -> str:
 
 def ydl_options(**extra):
     runtimes = {}
-    deno_path = shutil.which("deno")
+    deno_name = "deno.exe" if os.name == "nt" else "deno"
+    deno_path = shutil.which("deno") or str(Path.home() / ".deno" / "bin" / deno_name)
+    if not Path(deno_path).is_file():
+        deno_path = None
     node_path = shutil.which("node")
     if deno_path:
         runtimes["deno"] = {"path": deno_path}
     elif node_path:
         runtimes["node"] = {"path": node_path}
 
-    return {
+    options = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
-        "js_runtimes": runtimes,
         **extra,
     }
+    if runtimes:
+        options["js_runtimes"] = runtimes
+    return options
 
 
 def extract_audio(video_id: str) -> dict:
     video_id = normalize_video_id(video_id)
-    with yt_dlp.YoutubeDL(ydl_options(format="bestaudio/best")) as ydl:
-        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-    if not info or not info.get("url"):
-        raise HTTPException(404, "Audio no disponible")
-    return info
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    attempts = [
+        {},
+        {"extractor_args": {"youtube": {"player_client": ["tv_simply", "android_vr", "web_embedded"]}}},
+    ]
+    last_error = None
+    for attempt in attempts:
+        try:
+            with yt_dlp.YoutubeDL(ydl_options(format="bestaudio/best", **attempt)) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+            if info and info.get("url") and info.get("acodec") != "none":
+                return info
+            last_error = RuntimeError("YouTube no devolvió un formato con audio")
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "YouTube audio extraction attempt failed for %s (%s): %s",
+                video_id,
+                "default" if not attempt else "fallback clients",
+                exc,
+            )
+
+    if last_error:
+        raise last_error
+    raise HTTPException(404, "Audio no disponible")
 
 
 async def get_audio(video_id: str) -> dict:
