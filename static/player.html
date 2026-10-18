@@ -1497,10 +1497,12 @@
 
   <!-- Main JavaScript App Logic -->
   <script>
-    const MUSIC_API_BASE = "https://musicapaintbackend.onrender.com";
-    const musicApiUrl = (path) => new URL(path, MUSIC_API_BASE).toString();
     const $ = (id) => document.getElementById(id);
     const audio = $("audioEl");
+    const MUSIC_API_BASE = window.location.protocol === "file:"
+      ? "https://musicapaintbackend.onrender.com"
+      : window.location.origin;
+    const musicApiUrl = (path) => new URL(path, MUSIC_API_BASE).toString();
 
     // Estado global de la aplicación
     let activeView = "home";

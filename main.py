@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Lock
 from urllib.parse import parse_qs, urlparse
 
@@ -13,7 +14,7 @@ import httpx
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
 app = FastAPI(title="Music API")
 logger = logging.getLogger(__name__)
@@ -21,7 +22,6 @@ logger = logging.getLogger(__name__)
 def configured_cors_origins() -> list[str]:
     configured = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000,http://localhost:5173")
     origins = [origin.strip() for origin in configured.split(",") if origin.strip()]
-    # Browsers use the opaque "null" origin when this frontend is opened as file://.
     if "null" not in origins:
         origins.append("null")
     return origins
@@ -73,19 +73,22 @@ def normalize_video_id(value: str) -> str:
 
 
 def ydl_options(**extra):
-    options = {
+    runtimes = {}
+    deno_path = shutil.which("deno")
+    node_path = shutil.which("node")
+    if deno_path:
+        runtimes["deno"] = {"path": deno_path}
+    elif node_path:
+        runtimes["node"] = {"path": node_path}
+
+    return {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
+        "js_runtimes": runtimes,
+        **extra,
     }
-    for runtime in ("deno", "node"):
-        runtime_path = shutil.which(runtime)
-        if runtime_path:
-            options["js_runtimes"] = {runtime: {"path": runtime_path}}
-            break
-    options.update(extra)
-    return options
 
 
 def extract_audio(video_id: str) -> dict:
@@ -332,6 +335,11 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/player", include_in_schema=False)
+def player():
+    return FileResponse(Path(__file__).parent / "static" / "player.html")
 
 
 @app.get("/search")
