@@ -5,6 +5,7 @@ import os
 import random
 import re
 import shutil
+import socket
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -103,6 +104,7 @@ def extract_audio(video_id: str) -> dict:
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     attempts = [
         {},
+        {"extractor_args": {"youtube": {"player_client": ["mweb"]}}},
         {"extractor_args": {"youtube": {"player_client": ["tv_simply", "android_vr", "web_embedded"]}}},
     ]
     last_error = None
@@ -385,6 +387,11 @@ def health():
             runtime_version = (version.stdout or version.stderr).strip().splitlines()[0][:40]
         except (OSError, subprocess.SubprocessError, IndexError):
             runtime_version = "unavailable"
+    try:
+        with socket.create_connection(("127.0.0.1", 4416), timeout=0.25):
+            pot_provider = True
+    except OSError:
+        pot_provider = False
     return {
         "status": "ok",
         "audio": {
@@ -392,6 +399,7 @@ def health():
             "ejs_installed": find_spec("yt_dlp_ejs") is not None,
             "js_runtime": runtime,
             "js_runtime_version": runtime_version,
+            "pot_provider": pot_provider,
         },
     }
 

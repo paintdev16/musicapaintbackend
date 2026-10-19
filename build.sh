@@ -3,9 +3,8 @@ set -euo pipefail
 
 python -m pip install -r requirements.txt
 
-if ! command -v deno >/dev/null 2>&1; then
-  curl -fsSL https://deno.land/install.sh | sh
+POT_PROVIDER_DIR="$HOME/bgutil-ytdlp-pot-provider"
+if [ ! -d "$POT_PROVIDER_DIR/server" ]; then
+  git clone --depth 1 --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "$POT_PROVIDER_DIR"
 fi
-
-export PATH="$HOME/.deno/bin:$PATH"
-deno --version
+(cd "$POT_PROVIDER_DIR/server" && npm ci && npx tsc)
