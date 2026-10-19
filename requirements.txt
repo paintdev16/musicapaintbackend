@@ -4,3 +4,4 @@ uvicorn[standard]
 yt-dlp[default]
 httpx
 bgutil-ytdlp-pot-provider==2.0.2
+ytmusicapi>=1.12.0,<2

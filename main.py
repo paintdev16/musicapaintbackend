@@ -18,8 +18,11 @@ import yt_dlp
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from pydantic import BaseModel
 
-app = FastAPI(title="Music API")
+from relay_resolver import resolve_audio as resolve_relay_audio
+
+app = FastAPI(title="Music API", docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
 logger = logging.getLogger(__name__)
 
 def configured_cors_origins() -> list[str]:
@@ -130,6 +133,7 @@ def extract_audio(video_id: str) -> dict:
 
 
 async def get_audio(video_id: str) -> dict:
+    video_id = normalize_video_id(video_id)
     now = time.time()
     async with _AUDIO_CACHE_LOCK:
         cached = _AUDIO_CACHE.get(video_id)
@@ -146,12 +150,18 @@ async def get_audio(video_id: str) -> dict:
             if cached and cached[0] > now:
                 return cached[1].copy()
         try:
-            data = await asyncio.to_thread(extract_audio, video_id)
-        except HTTPException:
-            raise
+            data = await resolve_relay_audio(video_id)
         except Exception as exc:
-            logger.exception("Audio extraction failed for video %s", video_id)
-            raise HTTPException(502, "No se pudo extraer el audio del video") from exc
+            logger.warning("Audio relay resolution failed for %s: %s", video_id, exc)
+            data = None
+        if data is None:
+            try:
+                data = await asyncio.to_thread(extract_audio, video_id)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.exception("Audio extraction failed for video %s", video_id)
+                raise HTTPException(502, "No se pudo extraer el audio del video") from exc
 
         ttl = AUDIO_CACHE_TTL
         expires = parse_qs(urlparse(data.get("url", "")).query).get("expire", [])
@@ -362,6 +372,8 @@ def home():
 
 
 @app.get("/health")
+@app.get("/health/ready", include_in_schema=False)
+@app.get("/api/health")
 def health():
     deno_name = "deno.exe" if os.name == "nt" else "deno"
     deno_path = shutil.which("deno") or str(Path.home() / ".deno" / "bin" / deno_name)
@@ -420,6 +432,140 @@ async def search(q: str = Query(min_length=1, max_length=100), limit: int = Quer
     return {"query": q, "total": len(results), "results": results}
 
 
+def _api_track(song: dict) -> dict:
+    video_id = song["id"]
+    artist_name = song.get("artist") or "Desconocido"
+    artwork = song.get("thumbnail") or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    artist = {"id": "", "name": artist_name, "imageUrl": artwork, "genres": []}
+    return {
+        "id": video_id,
+        "title": song.get("title") or "Sin título",
+        "artist": artist,
+        "album": {"id": "", "title": "", "artist": artist, "artworkUrl": artwork, "releaseYear": 0, "trackCount": 0},
+        "artworkUrl": artwork,
+        "duration": float(song.get("duration") or 0),
+        "streamUrl": f"/api/stream/{video_id}/audio",
+        "isDownloaded": False,
+        "isLiked": False,
+        "youtubeId": video_id,
+    }
+
+
+def _api_search_youtube_music(query: str, filter_name: str | None) -> dict:
+    from ytmusicapi import YTMusic
+
+    client = YTMusic()
+    normalized_filter = "songs" if filter_name in {"tracks", "songs"} else filter_name
+    raw_results = client.search(query, filter=normalized_filter, limit=20)
+    tracks = []
+    albums = []
+    artists = []
+    playlists = []
+
+    def artwork(item: dict) -> str:
+        thumbs = item.get("thumbnails") or []
+        return (thumbs[-1].get("url") if thumbs else "") or ""
+
+    def artist_payload(items: list, fallback: str = "") -> dict:
+        first = next((item for item in items if isinstance(item, dict)), {})
+        return {"id": first.get("id") or "", "name": first.get("name") or fallback or "Desconocido", "imageUrl": "", "genres": []}
+
+    for item in raw_results:
+        kind = item.get("resultType") or ("song" if item.get("videoId") else "")
+        thumb = artwork(item)
+        if kind in {"song", "video"} and item.get("videoId"):
+            artist = artist_payload(item.get("artists") or [])
+            album_item = item.get("album") or {}
+            if isinstance(album_item, str):
+                album_item = {"name": album_item}
+            duration = item.get("duration") or "0:00"
+            parts = duration.split(":") if isinstance(duration, str) else []
+            seconds = 0
+            try:
+                if len(parts) == 2:
+                    seconds = int(parts[0]) * 60 + int(parts[1])
+                elif len(parts) == 3:
+                    seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                elif isinstance(duration, (int, float)):
+                    seconds = float(duration)
+            except ValueError:
+                pass
+            tracks.append({
+                "id": item["videoId"], "title": item.get("title") or "Sin título", "artist": artist,
+                "album": {"id": album_item.get("id") or "", "title": album_item.get("name") or "", "artist": artist, "artworkUrl": thumb, "releaseYear": 0, "trackCount": 0},
+                "artworkUrl": thumb, "duration": seconds, "streamUrl": f"/api/stream/{item['videoId']}/audio",
+                "isDownloaded": False, "isLiked": False, "youtubeId": item["videoId"],
+            })
+        elif kind == "album" and item.get("browseId"):
+            albums.append({"id": item["browseId"], "title": item.get("title") or "", "artist": artist_payload(item.get("artists") or []), "artworkUrl": thumb, "releaseYear": item.get("year") or 0, "trackCount": 0})
+        elif kind == "artist" and item.get("browseId"):
+            artists.append({"id": item["browseId"], "name": item.get("artist") or item.get("name") or "", "imageUrl": thumb, "genres": []})
+        elif kind == "playlist" and item.get("browseId"):
+            playlists.append({"id": item["browseId"], "title": item.get("title") or "", "artworkUrl": thumb, "trackCount": 0, "source": "youtube"})
+    return {"tracks": tracks, "albums": albums, "artists": artists, "playlists": playlists}
+
+
+@app.get("/api/search")
+async def api_search(
+    q: str = Query(min_length=1, max_length=200),
+    filter: str | None = Query(None, pattern="^(tracks|songs|albums|artists|playlists)$"),
+):
+    query = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", q).strip()
+    if not query:
+        raise HTTPException(400, "La búsqueda está vacía")
+    try:
+        results = await asyncio.to_thread(_api_search_youtube_music, query, filter)
+    except Exception as exc:
+        logger.warning("YouTube Music API search failed: %s", exc)
+        if filter in {"albums", "artists", "playlists"}:
+            raise HTTPException(502, "No se pudo completar la búsqueda") from exc
+        try:
+            songs = await asyncio.to_thread(search_youtube, query, 20)
+            results = {"tracks": [_api_track(song) for song in songs], "albums": [], "artists": [], "playlists": []}
+        except Exception as fallback_exc:
+            raise HTTPException(502, "No se pudo completar la búsqueda") from fallback_exc
+    return {"query": query, **results}
+
+
+@app.get("/api/search/suggest")
+async def api_search_suggest(q: str = Query(default="", max_length=200)):
+    query = q.strip()
+    if len(query) < 2:
+        return []
+    try:
+        songs = await asyncio.to_thread(search_youtube, query, 7)
+    except Exception as exc:
+        raise HTTPException(502, "No se pudieron cargar las sugerencias") from exc
+    return list(dict.fromkeys(song["title"] for song in songs if song.get("title")))
+
+
+class ResolveRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/search/resolve")
+async def api_search_resolve(body: ResolveRequest):
+    video_id = normalize_video_id(body.url)
+    try:
+        def resolve_metadata():
+            with yt_dlp.YoutubeDL(ydl_options(extract_flat=True)) as ydl:
+                return ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+
+        info = await asyncio.to_thread(resolve_metadata)
+    except Exception as exc:
+        raise HTTPException(502, "No se pudo resolver el video") from exc
+    song = song_from_entry(info or {"id": video_id})
+    if not song:
+        raise HTTPException(404, "Video no encontrado")
+    return {"query": body.url, "type": "track", "tracks": [_api_track(song)], "albums": [], "artists": [], "playlists": []}
+
+
+@app.get("/api/health/live", include_in_schema=False)
+@app.get("/health/live", include_in_schema=False)
+def health_live():
+    return {"status": "ok"}
+
+
 @app.get("/suggest")
 async def suggest(q: str = Query(min_length=2, max_length=100), limit: int = Query(7, ge=1, le=10)):
     if not q.strip():
@@ -451,6 +597,22 @@ async def related(
     return {"video_id": video_id, "total": len(results), "results": results}
 
 
+@app.get("/api/recommendations/autoplay")
+async def api_autoplay(
+    track_id: str = Query(min_length=11, max_length=11),
+    limit: int = Query(20, ge=1, le=100),
+    title: str | None = Query(None, max_length=200),
+    artist: str | None = Query(None, max_length=200),
+    genre: str | None = Query(None, max_length=80),
+):
+    video_id = normalize_video_id(track_id)
+    try:
+        songs = await asyncio.to_thread(related_searches, video_id, limit, set(), title, artist, genre)
+    except Exception as exc:
+        raise HTTPException(502, "No se pudieron buscar canciones relacionadas") from exc
+    return {"tracks": [_api_track(song) for song in songs]}
+
+
 @app.get("/info")
 async def info(url: str):
     data = await get_audio(normalize_video_id(url))
@@ -473,22 +635,37 @@ async def stream(url: str):
 @app.get("/direct/{video_id}")
 async def direct(video_id: str):
     data = await get_audio(video_id)
+    if data.get("relay"):
+        return RedirectResponse(f"/proxy/{normalize_video_id(video_id)}", status_code=307)
     return RedirectResponse(data["url"], status_code=307)
 
 
 @app.post("/warmup/{video_id}")
+@app.post("/api/stream/{video_id}/warm")
 async def warmup_audio(video_id: str):
-    await get_audio(normalize_video_id(video_id))
-    return {"status": "ready"}
+    normalized_id = normalize_video_id(video_id)
+    await get_audio(normalized_id)
+    return {"status": "ready", "ok": True, "state": "cached"}
 
 
 @app.get("/proxy/{video_id}")
+@app.get("/api/stream/{video_id}/audio")
 async def proxy(video_id: str, request: Request):
     data = await get_audio(video_id)
     audio_url = data["url"]
     parsed = urlparse(audio_url)
     host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or not (host == "googlevideo.com" or host.endswith(".googlevideo.com")):
+    allowed_suffix = str(data.get("allowed_stream_suffix") or "").lower().lstrip(".")
+
+    def host_allowed(candidate: str) -> bool:
+        candidate = candidate.lower().rstrip(".")
+        return (
+            candidate == "googlevideo.com"
+            or candidate.endswith(".googlevideo.com")
+            or bool(allowed_suffix and (candidate == allowed_suffix or candidate.endswith("." + allowed_suffix)))
+        )
+
+    if parsed.scheme != "https" or not host_allowed(host) or parsed.username or parsed.password:
         raise HTTPException(502, "Destino de audio no permitido")
     source_headers = data.get("http_headers") or {}
     headers = {k: v for k, v in source_headers.items() if k.lower() in {"user-agent", "referer", "origin", "accept", "accept-language"}}
@@ -499,7 +676,24 @@ async def proxy(video_id: str, request: Request):
         headers["Range"] = byte_range
     client = httpx.AsyncClient(follow_redirects=False, timeout=httpx.Timeout(connect=15, read=60, write=15, pool=15))
     try:
-        upstream = await client.send(client.build_request("GET", audio_url, headers=headers), stream=True)
+        for _ in range(3):
+            upstream = await client.send(client.build_request(request.method, audio_url, headers=headers), stream=True)
+            if upstream.status_code not in {301, 302, 303, 307, 308}:
+                break
+            location = upstream.headers.get("location")
+            await upstream.aclose()
+            if not location:
+                raise HTTPException(502, "El origen de audio devolvió una redirección inválida")
+            audio_url = httpx.URL(audio_url).join(location).__str__()
+            redirected = urlparse(audio_url)
+            redirect_host = (redirected.hostname or "").lower()
+            if redirected.scheme != "https" or not host_allowed(redirect_host) or redirected.username or redirected.password:
+                raise HTTPException(502, "El origen de audio redirigió a un destino no permitido")
+        else:
+            raise HTTPException(502, "Demasiadas redirecciones del origen de audio")
+    except HTTPException:
+        await client.aclose()
+        raise
     except httpx.HTTPError as exc:
         await client.aclose()
         raise HTTPException(502, "No se pudo conectar con el origen de audio") from exc
@@ -524,5 +718,11 @@ async def proxy(video_id: str, request: Request):
         media_type=upstream.headers.get("content-type", "application/octet-stream"),
         headers=response_headers,
     )
+
+
+@app.head("/proxy/{video_id}", include_in_schema=False)
+@app.head("/api/stream/{video_id}/audio", include_in_schema=False)
+async def proxy_head(video_id: str, request: Request):
+    return await proxy(video_id, request)
 
 
