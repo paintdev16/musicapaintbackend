@@ -58,6 +58,76 @@ _AUDIO_CACHE_LOCK = asyncio.Lock()
 AUDIO_CACHE_TTL = 900
 AUDIO_CACHE_MAX_ENTRIES = 512
 
+_YTDLP_TOKEN_LOG_RE = re.compile(
+    r"generating a (gvs|player|subs) po token for ([a-z0-9_-]+) client via ([a-z0-9_-]+)",
+    re.IGNORECASE,
+)
+
+
+def _audio_error_category(error: object) -> str:
+    message = str(error).lower()
+    if "sign in to confirm" in message or "confirm you're not a bot" in message or "login_required" in message:
+        return "youtube_login_or_ip_block"
+    if "http error 403" in message or "http 403" in message:
+        return "http_403"
+    if "requested format is not available" in message or "no video formats found" in message:
+        return "no_compatible_audio_format"
+    if "private video" in message or "video is unavailable" in message or "not available in your country" in message:
+        return "video_unavailable_or_restricted"
+    if "timed out" in message or "timeout" in message:
+        return "network_timeout"
+    if (
+        "name or service not known" in message
+        or "temporary failure in name resolution" in message
+        or "failed to resolve" in message
+    ):
+        return "dns_error"
+    return "other_extraction_error"
+
+
+class _AudioYtDlpLogger:
+    """Keep only PO-token diagnostics from yt-dlp; never log signed media URLs."""
+
+    def __init__(self, video_id: str, client_name: str):
+        self.video_id = video_id
+        self.client_name = client_name
+        self.provider_list_reported = False
+        self.token_requested = False
+
+    def debug(self, message: str) -> None:
+        if "po token providers:" in message.lower():
+            self.provider_list_reported = True
+            logger.info(
+                "yt-dlp PO-token providers listed video=%s client=%s",
+                self.video_id,
+                self.client_name,
+            )
+            return
+        match = _YTDLP_TOKEN_LOG_RE.search(message)
+        if match:
+            self.token_requested = True
+            logger.info(
+                "yt-dlp requested PO token video=%s client=%s context=%s provider=%s",
+                self.video_id,
+                self.client_name,
+                match.group(1).lower(),
+                match.group(3).lower(),
+            )
+
+    def warning(self, message: str) -> None:
+        # Warnings can contain signed URLs. The final exception is classified
+        # below without writing the raw message to Render logs.
+        return None
+
+    def error(self, message: str) -> None:
+        return None
+
+    def screen(self, message: str) -> None:
+        return None
+
+    def write(self, message: str) -> None:
+        return None
+
 
 def normalize_video_id(value: str) -> str:
     value = value.strip()
@@ -105,39 +175,55 @@ def ydl_options(**extra):
 def extract_audio(video_id: str) -> dict:
     video_id = normalize_video_id(video_id)
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    # Keep this aligned with Rheoson's working streaming ladder. mweb/web
-    # clients increasingly return SABR/PO-token gated formats on hosted
-    # servers, while Android clients still expose ordinary audio-only URLs.
+    # default and android_vr do not require a PO token. mweb is included
+    # because BgUtil can supply its GVS token. tv is a final token-free
+    # fallback. tv_embedded needs account cookies, and android uses Android
+    # attestation tokens that the BotGuard provider does not generate.
     attempts = (
         ("default", {}),
-        ("android", {"extractor_args": {"youtube": {"player_client": ["android"]}}}),
         ("android_vr", {"extractor_args": {"youtube": {"player_client": ["android_vr"]}}}),
-        ("tv_embedded", {"extractor_args": {"youtube": {"player_client": ["tv_embedded"]}}}),
+        ("mweb", {"extractor_args": {"youtube": {"player_client": ["mweb"]}}}),
+        ("tv", {"extractor_args": {"youtube": {"player_client": ["tv"]}}}),
     )
     # The player consumes an audio stream; avoid the final muxed `best`
     # fallback because some browsers reject a video container on <audio>.
     format_selector = "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio"
     last_error = None
     for client_name, attempt in attempts:
+        ydl_logger = _AudioYtDlpLogger(video_id, client_name)
         try:
             with yt_dlp.YoutubeDL(ydl_options(
                 format=format_selector,
                 socket_timeout=12,
                 extractor_retries=1,
+                verbose=True,
+                logger=ydl_logger,
                 **attempt,
             )) as ydl:
                 info = ydl.extract_info(video_url, download=False)
             if info and info.get("url") and info.get("acodec") not in (None, "none"):
+                logger.info(
+                    "YouTube audio resolved video=%s client=%s ext=%s codec=%s token_requested=%s",
+                    video_id,
+                    client_name,
+                    info.get("ext") or "unknown",
+                    info.get("acodec") or "unknown",
+                    ydl_logger.token_requested,
+                )
                 return info
             last_error = RuntimeError("YouTube no devolvió un formato con audio")
+            failure_category = _audio_error_category(last_error)
         except Exception as exc:
             last_error = exc
-            logger.warning(
-                "YouTube audio extraction attempt failed for %s (client=%s): %s",
-                video_id,
-                client_name,
-                exc,
-            )
+            failure_category = _audio_error_category(exc)
+        logger.warning(
+            "YouTube audio extraction failed video=%s client=%s category=%s provider_list=%s token_requested=%s",
+            video_id,
+            client_name,
+            failure_category,
+            ydl_logger.provider_list_reported,
+            ydl_logger.token_requested,
+        )
 
     if last_error:
         raise last_error
