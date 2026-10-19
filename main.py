@@ -105,25 +105,37 @@ def ydl_options(**extra):
 def extract_audio(video_id: str) -> dict:
     video_id = normalize_video_id(video_id)
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    attempts = [
-        {},
-        {"extractor_args": {"youtube": {"player_client": ["mweb"]}}},
-        {"extractor_args": {"youtube": {"player_client": ["tv_simply", "android_vr", "web_embedded"]}}},
-    ]
+    # Keep this aligned with Rheoson's working streaming ladder. mweb/web
+    # clients increasingly return SABR/PO-token gated formats on hosted
+    # servers, while Android clients still expose ordinary audio-only URLs.
+    attempts = (
+        ("default", {}),
+        ("android", {"extractor_args": {"youtube": {"player_client": ["android"]}}}),
+        ("android_vr", {"extractor_args": {"youtube": {"player_client": ["android_vr"]}}}),
+        ("tv_embedded", {"extractor_args": {"youtube": {"player_client": ["tv_embedded"]}}}),
+    )
+    # The player consumes an audio stream; avoid the final muxed `best`
+    # fallback because some browsers reject a video container on <audio>.
+    format_selector = "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio"
     last_error = None
-    for attempt in attempts:
+    for client_name, attempt in attempts:
         try:
-            with yt_dlp.YoutubeDL(ydl_options(format="bestaudio/best", **attempt)) as ydl:
+            with yt_dlp.YoutubeDL(ydl_options(
+                format=format_selector,
+                socket_timeout=12,
+                extractor_retries=1,
+                **attempt,
+            )) as ydl:
                 info = ydl.extract_info(video_url, download=False)
-            if info and info.get("url") and info.get("acodec") != "none":
+            if info and info.get("url") and info.get("acodec") not in (None, "none"):
                 return info
             last_error = RuntimeError("YouTube no devolvió un formato con audio")
         except Exception as exc:
             last_error = exc
             logger.warning(
-                "YouTube audio extraction attempt failed for %s (%s): %s",
+                "YouTube audio extraction attempt failed for %s (client=%s): %s",
                 video_id,
-                "default" if not attempt else "fallback clients",
+                client_name,
                 exc,
             )
 
